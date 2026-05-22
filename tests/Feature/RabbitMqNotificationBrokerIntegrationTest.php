@@ -54,20 +54,22 @@ class RabbitMqNotificationBrokerIntegrationTest extends TestCase
 
     public function test_real_rabbitmq_consumer_sends_notification_and_updates_database_status(): void
     {
-        $this->postJson('/api/v1/notifications', [
+        $response = $this->postJson('/api/v1/notifications', [
             'channel' => 'email',
             'priority' => 'transactional',
             'message' => 'Route changed',
-            'recipient_ids' => ['driver@example.com'],
-            'idempotency_key' => 'rabbitmq-route-changed',
+            'recipient_ids' => [$this->recipientEmail('rabbitmq-driver')],
+            'idempotency_key' => $this->idempotencyKey('rabbitmq-route-changed'),
         ])->assertAccepted();
+
+        $notificationId = $response->json('data.notifications.0.id');
 
         $processed = app(NotificationBroker::class)->consume(
             fn (string $notificationId) => app(SendQueuedNotification::class)->handle($notificationId),
             limit: 1,
         );
 
-        $notification = Notification::query()->sole();
+        $notification = Notification::query()->findOrFail($notificationId);
 
         $this->assertSame(1, $processed);
         $this->assertSame(DeliveryStatus::Delivered, $notification->status);
@@ -79,20 +81,22 @@ class RabbitMqNotificationBrokerIntegrationTest extends TestCase
     {
         config()->set('notifications.max_retries', 2);
 
-        $this->postJson('/api/v1/notifications', [
+        $response = $this->postJson('/api/v1/notifications', [
             'channel' => 'email',
             'priority' => 'transactional',
             'message' => 'Route changed [temporary-fail]',
-            'recipient_ids' => ['driver@example.com'],
-            'idempotency_key' => 'rabbitmq-temporary-fail',
+            'recipient_ids' => [$this->recipientEmail('rabbitmq-retry-driver')],
+            'idempotency_key' => $this->idempotencyKey('rabbitmq-temporary-fail'),
         ])->assertAccepted();
+
+        $notificationId = $response->json('data.notifications.0.id');
 
         app(NotificationBroker::class)->consume(
             fn (string $notificationId) => app(SendQueuedNotification::class)->handle($notificationId),
             limit: 1,
         );
 
-        $notification = Notification::query()->sole();
+        $notification = Notification::query()->findOrFail($notificationId);
 
         $this->assertSame(DeliveryStatus::Queued, $notification->status);
         $this->assertSame(1, $notification->attempts);
@@ -111,6 +115,16 @@ class RabbitMqNotificationBrokerIntegrationTest extends TestCase
         $this->assertSame(2, $notification->attempts);
         $this->assertNull($notification->next_retry_at);
         $this->assertNotNull($notification->dropped_at);
+    }
+
+    private function idempotencyKey(string $prefix): string
+    {
+        return $prefix.'-'.str_replace('.', '', uniqid('', true));
+    }
+
+    private function recipientEmail(string $prefix): string
+    {
+        return $prefix.'+'.str_replace('.', '', uniqid('', true)).'@example.com';
     }
 
     private function canConnectToRabbitMq(): bool

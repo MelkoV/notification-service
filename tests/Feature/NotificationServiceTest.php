@@ -25,7 +25,7 @@ class NotificationServiceTest extends TestCase
     public function test_it_accepts_mass_notifications_and_publishes_each_recipient(): void
     {
         $response = $this
-            ->withHeader('Idempotency-Key', 'batch-001')
+            ->withHeader('Idempotency-Key', $this->idempotencyKey('batch'))
             ->postJson('/api/v1/notifications', [
                 'channel' => 'email',
                 'priority' => 'marketing',
@@ -40,7 +40,9 @@ class NotificationServiceTest extends TestCase
             ->assertJsonPath('data.recipient_count', 2)
             ->assertJsonCount(2, 'data.notifications');
 
-        $this->assertSame(2, Notification::query()->count());
+        $batchId = $response->json('data.id');
+
+        $this->assertSame(2, Notification::query()->where('batch_id', $batchId)->count());
         $this->assertCount(2, $this->broker->published);
     }
 
@@ -51,27 +53,33 @@ class NotificationServiceTest extends TestCase
             'priority' => 'transactional',
             'message' => 'Your access code is 1234',
             'recipient_ids' => ['+79000000000'],
-            'idempotency_key' => 'access-code-1234',
+            'idempotency_key' => $this->idempotencyKey('access-code'),
         ];
 
         $first = $this->postJson('/api/v1/notifications', $payload)->assertAccepted();
         $second = $this->postJson('/api/v1/notifications', $payload)->assertAccepted();
 
-        $this->assertSame($first->json('data.id'), $second->json('data.id'));
-        $this->assertSame(1, NotificationBatch::query()->count());
-        $this->assertSame(1, Notification::query()->count());
+        $batchId = $first->json('data.id');
+
+        $this->assertSame($batchId, $second->json('data.id'));
+        $this->assertTrue(NotificationBatch::query()->whereKey($batchId)->exists());
+        $this->assertSame(1, Notification::query()->where('batch_id', $batchId)->count());
         $this->assertCount(1, $this->broker->published);
     }
 
     public function test_consumer_sends_notifications_and_exposes_subscriber_history(): void
     {
-        $this->postJson('/api/v1/notifications', [
+        $recipient = $this->recipientEmail('driver');
+
+        $response = $this->postJson('/api/v1/notifications', [
             'channel' => 'email',
             'priority' => 'transactional',
             'message' => 'Route changed',
-            'recipient_ids' => ['driver@example.com'],
-            'idempotency_key' => 'route-changed',
+            'recipient_ids' => [$recipient],
+            'idempotency_key' => $this->idempotencyKey('route-changed'),
         ])->assertAccepted();
+
+        $notificationId = $response->json('data.notifications.0.id');
 
         $processed = $this->broker->consume(
             fn (string $notificationId) => app(SendQueuedNotification::class)->handle($notificationId),
@@ -79,42 +87,49 @@ class NotificationServiceTest extends TestCase
 
         $this->assertSame(1, $processed);
 
-        $this->getJson('/api/v1/subscribers/driver@example.com/notifications')
+        $this->getJson('/api/v1/subscribers/'.$recipient.'/notifications')
             ->assertOk()
-            ->assertJsonPath('data.0.status', DeliveryStatus::Delivered->value)
-            ->assertJsonPath('data.0.attempts', 1);
+            ->assertJsonFragment([
+                'id' => $notificationId,
+                'status' => DeliveryStatus::Delivered->value,
+                'attempts' => 1,
+            ]);
     }
 
     public function test_provider_can_drop_permanently_invalid_recipient(): void
     {
-        $this->postJson('/api/v1/notifications', [
+        $response = $this->postJson('/api/v1/notifications', [
             'channel' => 'sms',
             'priority' => 'marketing',
             'message' => 'Sale',
             'recipient_ids' => ['not-a-phone'],
         ])->assertAccepted();
 
+        $notificationId = $response->json('data.notifications.0.id');
+
         $this->broker->consume(
             fn (string $notificationId) => app(SendQueuedNotification::class)->handle($notificationId),
         );
 
-        $this->assertSame(DeliveryStatus::Dropped, Notification::query()->sole()->status);
+        $this->assertSame(DeliveryStatus::Dropped, Notification::query()->findOrFail($notificationId)->status);
     }
 
     public function test_temporary_provider_error_is_scheduled_for_delayed_retry(): void
     {
-        $this->postJson('/api/v1/notifications', [
+        $response = $this->postJson('/api/v1/notifications', [
             'channel' => 'email',
             'priority' => 'transactional',
             'message' => 'Route changed [temporary-fail]',
-            'recipient_ids' => ['driver@example.com'],
+            'recipient_ids' => [$this->recipientEmail('retry-driver')],
         ])->assertAccepted();
+
+        $notificationId = $response->json('data.notifications.0.id');
 
         $this->broker->consume(
             fn (string $notificationId) => app(SendQueuedNotification::class)->handle($notificationId),
         );
 
-        $notification = Notification::query()->sole();
+        $notification = Notification::query()->findOrFail($notificationId);
 
         $this->assertSame(DeliveryStatus::Queued, $notification->status);
         $this->assertSame(1, $notification->attempts);
@@ -128,18 +143,20 @@ class NotificationServiceTest extends TestCase
     {
         config()->set('notifications.max_retries', 1);
 
-        $this->postJson('/api/v1/notifications', [
+        $response = $this->postJson('/api/v1/notifications', [
             'channel' => 'email',
             'priority' => 'transactional',
             'message' => 'Route changed [temporary-fail]',
-            'recipient_ids' => ['driver@example.com'],
+            'recipient_ids' => [$this->recipientEmail('drop-driver')],
         ])->assertAccepted();
+
+        $notificationId = $response->json('data.notifications.0.id');
 
         $this->broker->consume(
             fn (string $notificationId) => app(SendQueuedNotification::class)->handle($notificationId),
         );
 
-        $notification = Notification::query()->sole();
+        $notification = Notification::query()->findOrFail($notificationId);
 
         $this->assertSame(DeliveryStatus::Dropped, $notification->status);
         $this->assertSame(1, $notification->attempts);
@@ -150,20 +167,25 @@ class NotificationServiceTest extends TestCase
 
     public function test_transactional_notifications_are_consumed_before_marketing_notifications(): void
     {
-        $this->postJson('/api/v1/notifications', [
+        $recipient = $this->recipientEmail('reader');
+
+        $marketingResponse = $this->postJson('/api/v1/notifications', [
             'channel' => 'email',
             'priority' => 'marketing',
             'message' => 'Newsletter',
-            'recipient_ids' => ['reader@example.com'],
+            'recipient_ids' => [$recipient],
         ])->assertAccepted();
 
-        $this->postJson('/api/v1/notifications', [
+        $transactionalResponse = $this->postJson('/api/v1/notifications', [
             'channel' => 'email',
             'priority' => 'transactional',
             'message' => 'Security code',
-            'recipient_ids' => ['reader@example.com'],
-            'idempotency_key' => 'security-code',
+            'recipient_ids' => [$recipient],
+            'idempotency_key' => $this->idempotencyKey('security-code'),
         ])->assertAccepted();
+
+        $marketingNotificationId = $marketingResponse->json('data.notifications.0.id');
+        $transactionalNotificationId = $transactionalResponse->json('data.notifications.0.id');
 
         $this->broker->consume(
             fn (string $notificationId) => app(SendQueuedNotification::class)->handle($notificationId),
@@ -171,10 +193,21 @@ class NotificationServiceTest extends TestCase
         );
 
         $delivered = Notification::query()
+            ->whereIn('id', [$marketingNotificationId, $transactionalNotificationId])
             ->where('status', DeliveryStatus::Delivered)
             ->sole();
 
         $this->assertSame('transactional', $delivered->priority->value);
         $this->assertSame('Security code', $delivered->message);
+    }
+
+    private function idempotencyKey(string $prefix): string
+    {
+        return $prefix.'-'.str_replace('.', '', uniqid('', true));
+    }
+
+    private function recipientEmail(string $prefix): string
+    {
+        return $prefix.'+'.str_replace('.', '', uniqid('', true)).'@example.com';
     }
 }

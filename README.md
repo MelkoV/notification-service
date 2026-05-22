@@ -67,6 +67,8 @@ curl -X POST http://localhost:8000/api/v1/notifications \
 - `recipient_ids`: массив идентификаторов подписчиков, email-адресов или телефонов
 - `idempotency_key`: опционально, альтернатива header `Idempotency-Key`
 
+`idempotency_key` и header `Idempotency-Key` можно не передавать, тогда ключ идемпотентности сгенерируется на основе данных запроса
+
 ### История уведомлений подписчика
 
 ```bash
@@ -84,6 +86,11 @@ curl http://localhost:8000/api/v1/subscribers/driver@example.com/notifications
 
 ```bash
 php artisan test
+```
+Вместе с запущенным RabbitMQ:
+
+```bash
+RABBITMQ_INTEGRATION_TESTS=true php artisan test
 ```
 
 ## Mock-провайдеры
