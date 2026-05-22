@@ -55,12 +55,14 @@ services:
     depends_on:
       app:
         condition: service_started
+      postgres:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
     volumes:
       - .:/var/www/html
       - vendor:/var/www/html/vendor
-    command: sh -lc "until [ -f vendor/autoload.php ]; do sleep 1; done; php artisan notifications:consume"
+    command: sh -lc "until [ -f vendor/autoload.php ]; do sleep 1; done; until php artisan package:discover --ansi; do sleep 1; done; php artisan notifications:consume"
 
   postgres:
     image: postgres:17-alpine
@@ -69,7 +71,7 @@ services:
       POSTGRES_USER: notification_service
       POSTGRES_PASSWORD: notification_service
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -79,7 +81,9 @@ services:
       retries: 20
 
   rabbitmq:
-    image: rabbitmq:4-management-alpine
+    build:
+      context: .
+      dockerfile: docker/rabbitmq/Dockerfile
     environment:
       RABBITMQ_DEFAULT_USER: notification_service
       RABBITMQ_DEFAULT_PASS: notification_service

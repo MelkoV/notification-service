@@ -12,13 +12,13 @@ Laravel API-сервис для массовой отправки SMS/Email ув
 
 ## В рамках тестового задания (для простоты):
 
-- Переменные прописаны явно в `docker-compose.yaml`, а не передаются из `.env`
 - Отсутствует авторизация / CORS
 - Отсутствует nginx / fpm, запуск API происходит через `artisan serve`
 - Consumer запускается в виде отдельного контейнера, а не через `supervisor`
 - Отсутствует проверка существования пользователя
 - В качестве идентификаторов пользователей принимаются phones/emails
 - RabbitMQ exchange/queue декларируются из кода, а не из `definitions.json`
+- Нет PHPStan и мутационных тестов
 
 ## Архитектура
 
@@ -29,7 +29,7 @@ Worker `php artisan notifications:consume` читает RabbitMQ, вызывае
 ## Запуск
 
 ```bash
-docker compose up --build
+docker compose up -d --build
 ```
 
 Сервисы:
@@ -80,30 +80,11 @@ curl http://localhost:8000/api/v1/subscribers/driver@example.com/notifications
 - `delivered` — провайдер подтвердил доставку
 - `dropped` — permanent failure, например невалидный email/телефон
 
-## Локальная разработка без Docker
-
-```bash
-composer install
-php artisan migrate
-php artisan serve --host=0.0.0.0 --port=8000
-php artisan notifications:consume
-```
-
-Для локального запуска без Docker нужны доступные PostgreSQL, Redis и RabbitMQ, соответствующие `.env`.
-
 ## Тесты
 
 ```bash
 php artisan test
 ```
-
-Покрытые сценарии:
-
-- массовое создание batch и публикация каждого получателя в очередь
-- идемпотентность без повторной публикации
-- цепочка queue consumer → provider → delivery status
-- permanent drop для невалидного получателя
-- приоритет `transactional` над `marketing`
 
 ## Mock-провайдеры
 

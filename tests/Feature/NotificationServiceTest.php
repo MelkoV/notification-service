@@ -8,13 +8,10 @@ use App\Models\NotificationBatch;
 use App\Services\Notifications\Actions\SendQueuedNotification;
 use App\Services\Notifications\Contracts\NotificationBroker;
 use App\Services\Notifications\Testing\ArrayNotificationBroker;
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 class NotificationServiceTest extends TestCase
 {
-    use RefreshDatabase;
-
     private ArrayNotificationBroker $broker;
 
     protected function setUp(): void
@@ -53,7 +50,7 @@ class NotificationServiceTest extends TestCase
             'channel' => 'sms',
             'priority' => 'transactional',
             'message' => 'Your access code is 1234',
-            'recipient_ids' => ['+15555550100'],
+            'recipient_ids' => ['+79000000000'],
             'idempotency_key' => 'access-code-1234',
         ];
 
@@ -102,6 +99,53 @@ class NotificationServiceTest extends TestCase
         );
 
         $this->assertSame(DeliveryStatus::Dropped, Notification::query()->sole()->status);
+    }
+
+    public function test_temporary_provider_error_is_scheduled_for_delayed_retry(): void
+    {
+        $this->postJson('/api/v1/notifications', [
+            'channel' => 'email',
+            'priority' => 'transactional',
+            'message' => 'Route changed [temporary-fail]',
+            'recipient_ids' => ['driver@example.com'],
+        ])->assertAccepted();
+
+        $this->broker->consume(
+            fn (string $notificationId) => app(SendQueuedNotification::class)->handle($notificationId),
+        );
+
+        $notification = Notification::query()->sole();
+
+        $this->assertSame(DeliveryStatus::Queued, $notification->status);
+        $this->assertSame(1, $notification->attempts);
+        $this->assertNotNull($notification->next_retry_at);
+        $this->assertCount(1, $this->broker->delayedPublished);
+        $this->assertSame($notification->id, $this->broker->delayedPublished[0]['id']);
+        $this->assertSame(10, $this->broker->delayedPublished[0]['priority']);
+    }
+
+    public function test_temporary_provider_error_drops_after_max_retries_without_delayed_retry(): void
+    {
+        config()->set('notifications.max_retries', 1);
+
+        $this->postJson('/api/v1/notifications', [
+            'channel' => 'email',
+            'priority' => 'transactional',
+            'message' => 'Route changed [temporary-fail]',
+            'recipient_ids' => ['driver@example.com'],
+        ])->assertAccepted();
+
+        $this->broker->consume(
+            fn (string $notificationId) => app(SendQueuedNotification::class)->handle($notificationId),
+        );
+
+        $notification = Notification::query()->sole();
+
+        $this->assertSame(DeliveryStatus::Dropped, $notification->status);
+        $this->assertSame(1, $notification->attempts);
+        $this->assertNull($notification->next_retry_at);
+        $this->assertNotNull($notification->dropped_at);
+        $this->assertCount(0, $this->broker->delayedPublished);
     }
 
     public function test_transactional_notifications_are_consumed_before_marketing_notifications(): void

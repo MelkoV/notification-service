@@ -10,6 +10,7 @@ return [
         'exchange' => env('RABBITMQ_EXCHANGE', 'notifications'),
         'queue' => env('RABBITMQ_QUEUE', 'notifications.priority'),
         'max_priority' => (int) env('RABBITMQ_MAX_PRIORITY', 10),
+        'consume_wait_timeout' => (int) env('RABBITMQ_CONSUME_WAIT_TIMEOUT', 0),
     ],
 
     'idempotency_ttl' => (int) env('NOTIFICATION_IDEMPOTENCY_TTL', 86400),
