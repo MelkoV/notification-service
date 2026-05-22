@@ -43,7 +43,7 @@ docker compose up -d --build
 
 ## API
 
-OpenAPI-файл: [`openapi.yaml`](openapi.yaml).
+Swagger: [`http://localhost:8000/docs/api`](http://localhost:8000/docs/api).
 
 ### Создать batch уведомлений
 

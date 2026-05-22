@@ -14,6 +14,7 @@
         "laravel/tinker": "^3.0",
         "php-amqplib/php-amqplib": "^3.7",
         "predis/predis": "*",
+        "ronasit/laravel-swagger": "^3.2",
         "spatie/laravel-data": "^4.23"
     },
     "require-dev": {
@@ -52,6 +53,11 @@
         "test": [
             "@php artisan config:clear --ansi @no_additional_args",
             "@php artisan test"
+        ],
+        "docs:generate": [
+            "@php artisan config:clear --ansi",
+            "@php artisan test --testsuite=Feature",
+            "@php artisan swagger:push-documentation"
         ],
         "post-autoload-dump": [
             "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",

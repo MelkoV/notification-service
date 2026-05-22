@@ -16,7 +16,7 @@ return Application::configure(basePath: dirname(__DIR__))
         ConsumeNotifications::class,
     ])
     ->withMiddleware(function (Middleware $middleware): void {
-        //
+        $middleware->append(\RonasIT\AutoDoc\Http\Middleware\AutoDocMiddleware::class);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //
